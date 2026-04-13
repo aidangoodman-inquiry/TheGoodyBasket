@@ -382,9 +382,12 @@ async function showAdminView() {
         loadAdminSettings(),
     ]);
 }
-function switchToCustomer() {
+async function switchToCustomer() {
     el('admin-view').classList.add('hidden');
     el('customer-view').classList.remove('hidden');
+    await loadCart();
+    renderProducts();
+    renderLocationDropdown();
 }
 
 // ── ADMIN TABS ────────────────────────────────────────────────────────
@@ -562,6 +565,10 @@ async function toggleDate(dateStr) {
 // ── ADMIN: PRODUCTS ───────────────────────────────────────────────────
 async function renderAdminProducts() {
     try { products = await api('products_list'); } catch(e) {}
+    if (!products.length) {
+        el('products-admin-grid').innerHTML = `<div class="empty-state"><div class="empty-icon">🍞</div><p>No products yet. Add one above.</p></div>`;
+        return;
+    }
     el('products-admin-grid').innerHTML = products.map(p => `
         <div class="prod-admin-card">
             <div class="prod-admin-top">
