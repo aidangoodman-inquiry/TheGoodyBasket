@@ -83,21 +83,38 @@ function cartQty(productId) {
 }
 
 function renderProducts() {
-    el('products-grid').innerHTML = products.map(p => {
+    const visibleProducts = products.filter(p => p.available);
+    if (!visibleProducts.length) {
+        el('products-grid').innerHTML = `
+            <div class="empty-state" style="grid-column:1/-1; text-align:center;">
+                <div class="empty-icon">🥖</div>
+                <p>There are no products available right now. Please check back soon.</p>
+            </div>`;
+        return;
+    }
+
+    el('products-grid').innerHTML = visibleProducts.map(p => {
         const qty    = cartQty(p.id);
         const inCart = qty > 0;
-        const cartBtn = p.available
-            ? inCart
-                ? `<button class="in-cart-btn" onclick="addToCart(${p.id})">✓ In Cart (${qty})</button>`
-                : `<button class="add-to-cart-btn" onclick="addToCart(${p.id})">Add to Cart</button>`
-            : '';
+        const cartBtn = inCart
+            ? `<button class="in-cart-btn" onclick="addToCart(${p.id})">✓ In Cart (${qty})</button>`
+            : `<button class="add-to-cart-btn" onclick="addToCart(${p.id})">Add to Cart</button>`;
+
+        const allergens = [];
+        if (p.dairy)     allergens.push('Dairy');
+        if (p.treeNuts)  allergens.push('Tree nuts');
+        if (p.egg)       allergens.push('Egg');
+        if (p.peanut)    allergens.push('Peanut');
+        if (p.sesame)    allergens.push('Sesame');
+        if (p.soy)       allergens.push('Soy');
+
         return `
-        <div class="product-card ${!p.available ? 'product-unavailable' : ''}">
-            ${!p.available ? '<div class="unavailable-tag">Unavailable</div>' : ''}
+        <div class="product-card">
             <div class="product-icon">${p.category === 'specialty' ? '✨' : '🍞'}</div>
             <span class="badge badge-${p.category}">${p.category}</span>
             <h3>${p.name}</h3>
             <p>${p.description || ''}</p>
+            ${allergens.length ? `<div class="product-allergens">Contains: ${allergens.join(', ')}</div>` : ''}
             <div class="product-footer">
                 <div class="product-price">${fmtCurrency(p.price)}</div>
                 ${cartBtn}
@@ -579,6 +596,13 @@ function openAddProduct() {
     el('prod-category').value = 'regular';
     el('prod-price').value = '';
     el('prod-desc').value = '';
+    el('prod-available').checked = true;
+    el('prod-dairy').checked = false;
+    el('prod-treenuts').checked = false;
+    el('prod-egg').checked = false;
+    el('prod-peanut').checked = false;
+    el('prod-sesame').checked = false;
+    el('prod-soy').checked = false;
     el('product-modal').classList.remove('hidden');
 }
 
@@ -592,20 +616,39 @@ function openEditProduct(id) {
     el('prod-category').value = p.category;
     el('prod-price').value = p.price;
     el('prod-desc').value = p.description || '';
+    el('prod-available').checked = !!p.available;
+    el('prod-dairy').checked = !!p.dairy;
+    el('prod-treenuts').checked = !!p.treeNuts;
+    el('prod-egg').checked = !!p.egg;
+    el('prod-peanut').checked = !!p.peanut;
+    el('prod-sesame').checked = !!p.sesame;
+    el('prod-soy').checked = !!p.soy;
     el('product-modal').classList.remove('hidden');
 }
 
 function closeProductModal() { el('product-modal').classList.add('hidden'); }
 
 async function saveProduct() {
-    const name     = el('prod-name').value.trim();
-    const category = el('prod-category').value;
-    const price    = parseFloat(el('prod-price').value);
-    const desc     = el('prod-desc').value.trim();
+    const name      = el('prod-name').value.trim();
+    const category  = el('prod-category').value;
+    const price     = parseFloat(el('prod-price').value);
+    const desc      = el('prod-desc').value.trim();
+    const available = el('prod-available').checked;
+    const dairy     = el('prod-dairy').checked;
+    const treeNuts  = el('prod-treenuts').checked;
+    const egg       = el('prod-egg').checked;
+    const peanut    = el('prod-peanut').checked;
+    const sesame    = el('prod-sesame').checked;
+    const soy       = el('prod-soy').checked;
     if (!name || isNaN(price) || price <= 0) { showToast('Please enter a name and valid price.'); return; }
     try {
-        if (editingProductId) await api('products_edit', { id: editingProductId, name, category, price, description: desc });
-        else                  await api('products_add',  { name, category, price, description: desc });
+        const payload = { name, category, price, description: desc, available, dairy, treeNuts, egg, peanut, sesame, soy };
+        if (editingProductId) {
+            payload.id = editingProductId;
+            await api('products_edit', payload);
+        } else {
+            await api('products_add', payload);
+        }
         closeProductModal();
         await renderAdminProducts();
         renderProducts();

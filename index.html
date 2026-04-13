@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>The Goody Basket – Artisan Sourdough</title>
+    <title>The Goody Basket - Artisan Sourdough</title>
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
     <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
@@ -386,7 +386,7 @@
         <input type="hidden" id="prod-edit-id">
         <div class="form-group">
             <label>Product Name *</label>
-            <input type="text" id="prod-name" placeholder="e.g. Classic Sourdough Loaf">
+            <input type="text" id="prod-name" placeholder="e.g. Classic Sourdough Loaf" required>
         </div>
         <div class="form-row">
             <div class="form-group">
@@ -398,12 +398,35 @@
             </div>
             <div class="form-group">
                 <label>Price ($) *</label>
-                <input type="number" id="prod-price" placeholder="12.00" min="0" step="0.01">
+                <input type="number" id="prod-price" placeholder="12.00" min="0" step="0.01" required>
             </div>
         </div>
         <div class="form-group">
             <label>Description</label>
             <textarea id="prod-desc" rows="2" placeholder="Short description of this loaf..."></textarea>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Available</label>
+                <div class="toggle-wrap">
+                    <label class="toggle">
+                        <input type="checkbox" id="prod-available" checked>
+                        <div class="toggle-slider"></div>
+                        <span>Show this product to customers</span>
+                    </label>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Allergens</label>
+                <div class="checkbox-grid">
+                    <label><input type="checkbox" id="prod-dairy"> Dairy</label>
+                    <label><input type="checkbox" id="prod-treenuts"> Tree nuts</label>
+                    <label><input type="checkbox" id="prod-egg"> Egg</label>
+                    <label><input type="checkbox" id="prod-peanut"> Peanut</label>
+                    <label><input type="checkbox" id="prod-sesame"> Sesame</label>
+                    <label><input type="checkbox" id="prod-soy"> Soy</label>
+                </div>
+            </div>
         </div>
         <div class="modal-actions">
             <button class="btn btn-outline btn-sm" onclick="closeProductModal()">Cancel</button>

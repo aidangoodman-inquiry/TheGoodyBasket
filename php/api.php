@@ -254,6 +254,7 @@ function productsAdd() {
     $price    = (float)($b['price']    ?? 0);
     $category = in_array($b['category'] ?? '', ['regular','specialty'])
                     ? $b['category'] : 'regular';
+    $available = !empty($b['available']);
 
     if (!$name || $price <= 0) respondError('Name and price are required.');
 
@@ -262,9 +263,9 @@ function productsAdd() {
         'INSERT INTO products
             (Name, Description, Cost, category, available,
              Dairy, TreeNuts, Egg, Peanut, Sesame, Soy)
-         VALUES (?,?,?,?,1,?,?,?,?,?,?)'
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)'
     )->execute([
-        $name, $desc, $price, $category,
+        $name, $desc, $price, $category, $available,
         !empty($b['dairy']),  !empty($b['treeNuts']),
         !empty($b['egg']),    !empty($b['peanut']),
         !empty($b['sesame']), !empty($b['soy']),
@@ -280,16 +281,17 @@ function productsEdit() {
     $price    = (float)($b['price']    ?? 0);
     $category = in_array($b['category'] ?? '', ['regular','specialty'])
                     ? $b['category'] : 'regular';
+    $available = !empty($b['available']);
 
     if (!$id || !$name || $price <= 0) respondError('ID, name, and price are required.');
 
     getDB()->prepare(
         'UPDATE products
-         SET Name=?, Description=?, Cost=?, category=?,
+         SET Name=?, Description=?, Cost=?, category=?, available=?,
              Dairy=?, TreeNuts=?, Egg=?, Peanut=?, Sesame=?, Soy=?
          WHERE id=?'
     )->execute([
-        $name, $desc, $price, $category,
+        $name, $desc, $price, $category, $available,
         !empty($b['dairy']),  !empty($b['treeNuts']),
         !empty($b['egg']),    !empty($b['peanut']),
         !empty($b['sesame']), !empty($b['soy']),
