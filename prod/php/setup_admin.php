@@ -1,0 +1,86 @@
+<?php
+// ================================================================
+// THE GOODY BASKET — One-Time Admin Setup Script
+//
+// 1. Set your desired admin password in the variable below
+// 2. Upload this file to your server alongside config.php
+// 3. Visit it once in your browser: yoursite.com/setup_admin.php
+// 4. DELETE THIS FILE from your server immediately after use
+// ================================================================
+
+require_once 'config.php';
+
+$adminEmail    = 'thegoodybasket@outlook.com';
+$adminPassword = 'Tr0pic@lSunset#2024'; // <-- Change this before uploading
+
+
+// ── Safety check ────────────────────────────────────────────────
+if ($adminPassword === 'ENTER_YOUR_PASSWORD_HERE') {
+    die('<p style="color:red;font-family:sans-serif;">
+        <strong>Stop:</strong> You must set a real password in setup_admin.php before running this script.
+    </p>');
+}
+if (strlen($adminPassword) < 8) {
+    die('<p style="color:red;font-family:sans-serif;">
+        <strong>Stop:</strong> Password must be at least 8 characters.
+    </p>');
+}
+
+// ── Connect to DB ────────────────────────────────────────────────
+try {
+    $pdo = new PDO(
+        'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4',
+        DB_USER, DB_PASS,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+} catch (PDOException $e) {
+    die('<p style="color:red;font-family:sans-serif;">DB connection failed: ' . htmlspecialchars($e->getMessage()) . '</p>');
+}
+
+// ── Create or update admin account ──────────────────────────────
+$hash = password_hash($adminPassword, PASSWORD_BCRYPT);
+
+$stmt = $pdo->prepare('SELECT id FROM accounts WHERE email = ?');
+$stmt->execute([$adminEmail]);
+$existing = $stmt->fetch(PDO::FETCH_ASSOC);
+
+if ($existing) {
+    $pdo->prepare('UPDATE accounts SET password_hash = ?, role = "admin" WHERE email = ?')
+        ->execute([$hash, $adminEmail]);
+    $action = 'updated';
+} else {
+    $pdo->prepare('INSERT INTO accounts (email, password_hash, role) VALUES (?, ?, "admin")')
+        ->execute([$adminEmail, $hash]);
+    $action = 'created';
+}
+?>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Setup — The Goody Basket</title>
+    <style>
+        body { font-family: sans-serif; max-width: 500px; margin: 80px auto; padding: 0 24px; }
+        .box { background: #f0fdf4; border: 2px solid #86efac; border-radius: 10px; padding: 32px; }
+        h2 { color: #166534; margin-top: 0; }
+        p { color: #333; line-height: 1.6; }
+        code { background: #e5e7eb; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+        .warning { background: #fef9c3; border: 2px solid #fde047; border-radius: 10px; padding: 20px; margin-top: 20px; }
+        .warning strong { color: #854d0e; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>✅ Admin account <?= $action ?> successfully!</h2>
+        <p>Your admin account is ready:</p>
+        <p>
+            <strong>Email:</strong> <?= htmlspecialchars($adminEmail) ?><br>
+            <strong>Password:</strong> (the one you set in this file)
+        </p>
+        <p>You can now log into the admin panel on your site.</p>
+    </div>
+    <div class="warning">
+        <strong>⚠️ Important — delete this file now!</strong>
+        <p>Remove <code>setup_admin.php</code> from your server immediately. Leaving it online is a security risk.</p>
+    </div>
+</body>
+</html>

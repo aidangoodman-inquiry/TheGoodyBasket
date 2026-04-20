@@ -1,0 +1,14 @@
+#START Siteplus builder rules section
+#Do not delete/modify this section for preventing broke you builder
+#If you need some additional rules for you application you can add them after this section
+
+RewriteEngine On
+RewriteCond %{HTTP_HOST} ^mylinks.thegoodybasket.com$ [NC]
+RewriteRule ^(.*)$ /mylinks/$1 [L]
+RewriteBase /
+ErrorDocument 404 /404.html
+DirectoryIndex index.html index.php index.shtml
+#END Siteplus builder rules section
+
+# Use PHP 8.2
+AddHandler application/x-httpd-php82 .php

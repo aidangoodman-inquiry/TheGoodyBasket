@@ -1,0 +1,14 @@
+# Credentials & environment — never commit
+php/prod_config.php
+qa_config.php
+php/qa_config.php
+
+# QA output files
+qa_results*.html
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
