@@ -3,10 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="">
     <title>The Goody Basket - Artisan Sourdough</title>
-    <link href="https://fonts.cdnfonts.com/css/golden-3" rel="stylesheet">
-    <link href="https://fonts.cdnfonts.com/css/hangyaboly" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=9">
     <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
 </head>
 <body>
@@ -19,21 +18,41 @@
     <nav id="customer-nav">
         <div class="nav-inner">
             <a href="#hero" class="nav-logo">
-                <img src="TGB Logo.jpeg" alt="The Goody Basket" class="nav-logo-img">
+                <img src="TGB Logo.png" alt="The Goody Basket" class="nav-logo-img">
             </a>
             <div class="nav-links">
                 <a href="#products">Our Breads</a>
                 <a href="#reviews">Reviews</a>
                 <a href="#about">Our Story</a>
                 <a href="#" onclick="openLookupModal();return false;">Track Order</a>
+                <!-- Auth controls — JS toggles visibility via updateAuthNav() -->
+                <a href="#" id="nav-signin-btn" onclick="openSignInModal();return false;" class="nav-auth-link">Sign In</a>
+                <a href="#" id="nav-register-btn" onclick="openCreateAccountModal();return false;" class="nav-auth-register">Create Account</a>
+                <a href="#" id="nav-admin-toggle" onclick="showAdminView();return false;" class="nav-admin-btn hidden">⚙ Admin</a>
+                <a href="#" id="nav-signout-btn" onclick="signOut();return false;" class="nav-auth-link hidden">Sign Out</a>
                 <a href="#order" class="nav-cta">Order Now<span class="cart-badge hidden" id="nav-cart-badge">0</span></a>
             </div>
+            <button class="nav-hamburger" id="nav-hamburger" aria-label="Open menu" aria-expanded="false">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+        <div class="nav-mobile-menu" id="nav-mobile-menu" aria-hidden="true">
+            <a href="#products" class="nav-mobile-link">Our Breads</a>
+            <a href="#reviews" class="nav-mobile-link">Reviews</a>
+            <a href="#about" class="nav-mobile-link">Our Story</a>
+            <a href="#" class="nav-mobile-link" onclick="openLookupModal();return false;">Track Order</a>
+            <!-- Auth controls — JS toggles visibility via updateAuthNav() -->
+            <a href="#" id="nav-mobile-signin" class="nav-mobile-link nav-mobile-auth" onclick="openSignInModal();return false;">Sign In</a>
+            <a href="#" id="nav-mobile-register" class="nav-mobile-link nav-mobile-auth nav-mobile-register-link" onclick="openCreateAccountModal();return false;">Create Account</a>
+            <a href="#" id="nav-mobile-admin-toggle" class="nav-mobile-link nav-mobile-auth hidden" onclick="showAdminView();return false;">⚙ Admin Panel</a>
+            <a href="#" id="nav-mobile-signout" class="nav-mobile-link nav-mobile-auth hidden" onclick="signOut();return false;">Sign Out</a>
+            <a href="#order" class="nav-mobile-link nav-mobile-cta">Order Now<span class="cart-badge hidden" id="nav-cart-badge-mobile">0</span></a>
         </div>
     </nav>
 
     <section id="hero">
         <div class="hero-content">
-            <img src="TGB Logo.jpeg" alt="The Goody Basket" class="hero-logo">
+            <img src="TGB Logo.png" alt="The Goody Basket" class="hero-logo">
             <div class="hero-tag">✦ Baked Fresh to Order</div>
             <h1>Handcrafted Sourdough, Baked with Love</h1>
             <p>Naturally leavened, slow-fermented, and baked in small batches every week — just for you.</p>
@@ -116,19 +135,40 @@
                     </div>
 
                     <p class="form-section-title section-spacing-xl">Pickup Details</p>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="pickup-date">Pickup Date *</label>
-                            <input type="date" id="pickup-date" required>
-                            <div id="date-warning" class="date-blocked-warning hidden">⚠️ This date is unavailable. Please choose a different date.</div>
+                    <div class="form-group">
+                        <label>Pickup Date *</label>
+                        <input type="hidden" id="pickup-date">
+                        <div class="cust-cal">
+                            <div class="cust-cal-header">
+                                <button type="button" class="cal-nav-btn" onclick="custCalPrev()">&#8249;</button>
+                                <span class="cal-month-label" id="cust-cal-month"></span>
+                                <button type="button" class="cal-nav-btn" onclick="custCalNext()">&#8250;</button>
+                            </div>
+                            <div class="cal-grid cust-cal-grid">
+                                <div class="cal-weekdays">
+                                    <div class="cal-weekday">Sun</div><div class="cal-weekday">Mon</div>
+                                    <div class="cal-weekday">Tue</div><div class="cal-weekday">Wed</div>
+                                    <div class="cal-weekday">Thu</div><div class="cal-weekday">Fri</div>
+                                    <div class="cal-weekday">Sat</div>
+                                </div>
+                                <div class="cal-days" id="cust-cal-days"></div>
+                            </div>
+                            <div class="cust-cal-legend">
+                                <span class="cust-legend-item"><span class="legend-dot ld-available"></span> Available</span>
+                                <span class="cust-legend-item"><span class="legend-dot ld-blocked"></span> Unavailable</span>
+                                <span class="cust-legend-item"><span class="legend-dot ld-restricted"></span> No pickup</span>
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label for="pickup-location">Pickup Location *</label>
-                            <select id="pickup-location" required>
-                                <option value="">Select a location...</option>
-                            </select>
-                        </div>
+                        <div id="cust-cal-selected-label" class="cust-cal-selected-label hidden"></div>
+                        <div id="date-warning" class="date-blocked-warning hidden">⚠️ This date is unavailable. Please choose a different date.</div>
                     </div>
+                    <div class="form-group">
+                        <label for="pickup-location">Pickup Location *</label>
+                        <select id="pickup-location" required>
+                            <option value="">Select a location...</option>
+                        </select>
+                    </div>
+
                     <div class="form-group">
                         <label for="order-notes">Special Notes</label>
                         <textarea id="order-notes" rows="3" placeholder="Allergies, preferences, or any other notes..."></textarea>
@@ -369,6 +409,54 @@
     </div>
 </div>
 
+<!-- Sign In -->
+<div id="signin-modal" class="modal-overlay hidden">
+    <div class="modal-box">
+        <h2>Sign In</h2>
+        <p>Welcome back! Sign in to your Goody Basket account.</p>
+        <div class="form-group">
+            <label>Email Address</label>
+            <input type="email" id="si-email" placeholder="you@example.com" onkeydown="if(event.key==='Enter')doSignIn()">
+        </div>
+        <div class="form-group">
+            <label>Password</label>
+            <input type="password" id="si-password" placeholder="Your password" onkeydown="if(event.key==='Enter')doSignIn()">
+        </div>
+        <div id="si-error" class="form-error hidden"></div>
+        <div class="modal-actions">
+            <button class="btn btn-outline btn-sm" onclick="closeSignInModal()">Cancel</button>
+            <button class="btn btn-primary btn-sm" onclick="doSignIn()">Sign In</button>
+        </div>
+        <p class="modal-switch-link">Don't have an account? <a href="#" onclick="closeSignInModal();openCreateAccountModal();return false;">Create one →</a></p>
+    </div>
+</div>
+
+<!-- Create Account -->
+<div id="register-modal" class="modal-overlay hidden">
+    <div class="modal-box">
+        <h2>Create Account</h2>
+        <p>Join The Goody Basket for easier ordering.</p>
+        <div class="form-group">
+            <label>Email Address *</label>
+            <input type="email" id="reg-email" placeholder="you@example.com" onkeydown="if(event.key==='Enter')doRegister()">
+        </div>
+        <div class="form-group">
+            <label>Password * <span class="field-note-muted">(min 8 characters)</span></label>
+            <input type="password" id="reg-password" placeholder="Choose a password" onkeydown="if(event.key==='Enter')doRegister()">
+        </div>
+        <div class="form-group">
+            <label>Confirm Password *</label>
+            <input type="password" id="reg-confirm" placeholder="Repeat your password" onkeydown="if(event.key==='Enter')doRegister()">
+        </div>
+        <div id="reg-error" class="form-error hidden"></div>
+        <div class="modal-actions">
+            <button class="btn btn-outline btn-sm" onclick="closeRegisterModal()">Cancel</button>
+            <button class="btn btn-primary btn-sm" onclick="doRegister()">Create Account</button>
+        </div>
+        <p class="modal-switch-link">Already have an account? <a href="#" onclick="closeRegisterModal();openSignInModal();return false;">Sign in →</a></p>
+    </div>
+</div>
+
 <!-- Order Success -->
 <div id="success-modal" class="modal-overlay hidden">
     <div class="modal-box success-modal">
@@ -411,13 +499,12 @@
         </div>
         <div class="form-row">
             <div class="form-group">
-                <label>Available</label>
                 <div class="toggle-wrap">
-                    <label class="toggle">
+                    <label class="toggle" for="prod-available">
                         <input type="checkbox" id="prod-available" checked>
                         <div class="toggle-slider"></div>
+                        <span class="nowrap">Show this product to customers</span>
                     </label>
-                    <span style="white-space: nowrap;">Show this product to customers</span>
                 </div>
             </div>
             <div class="form-group">
@@ -533,6 +620,6 @@
 <div id="toast"></div>
 
 
-<script src="scripts/app.js"></script>
+<script src="scripts/app.js?v=5"></script>
 </body>
 </html>

@@ -7,10 +7,24 @@
 session_start();
 header('Content-Type: application/json');
 
+// Global safety net: any uncaught exception returns JSON instead of a silent 500.
+set_exception_handler(function (Throwable $e) {
+    http_response_code(500);
+    echo json_encode(['error' => 'Unexpected server error.']);
+    exit;
+});
+
+// Ensure a CSRF token exists for this session (bootstrap on first request)
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
 // Only allow requests from your own domain in production
 // header('Access-Control-Allow-Origin: https://yourdomain.com');
 
-require_once 'config.php';
+// Auto-detect environment: use prod_config.php on the server if it exists,
+// otherwise fall back to config.php for local development.
+require_once file_exists(__DIR__ . '/prod_config.php') ? 'prod_config.php' : 'config.php';
 
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -66,66 +80,214 @@ function isLoggedIn() {
     return isset($_SESSION['user']);
 }
 
+// ── CSRF ──────────────────────────────────────────────────────────────
+
+/**
+ * Regenerate (or create) the CSRF token for the current session.
+ * Returns the new token value.
+ */
+function generateCsrfToken() {
+    $token = bin2hex(random_bytes(32));
+    $_SESSION['csrf_token'] = $token;
+    return $token;
+}
+
+/**
+ * Compare the X-CSRF-Token request header against the session token.
+ * Uses hash_equals() to prevent timing attacks.
+ */
+function validateCsrfToken() {
+    $header = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    return $header !== ''
+        && !empty($_SESSION['csrf_token'])
+        && hash_equals($_SESSION['csrf_token'], $header);
+}
+
+/**
+ * Abort with HTTP 403 if the CSRF token is missing or wrong.
+ */
+function requireCsrf() {
+    if (!validateCsrfToken()) {
+        respondError('Invalid or missing CSRF token.', 403);
+    }
+}
+
+function getClientIp() {
+    // Respect a reverse-proxy forward, but take only the first (client) IP
+    if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+        return trim(explode(',', $_SERVER['HTTP_X_FORWARDED_FOR'])[0]);
+    }
+    return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+}
+
+/**
+ * MySQL-backed sliding-window rate limiter.
+ * The rate_limits table is created on first use so no manual migration is
+ * needed — just works on both new and existing installs.
+ *
+ * @param string $ip     Client IP address
+ * @param string $group  Bucket name ('auth' | 'general')
+ * @param int    $limit  Max requests allowed inside the window
+ * @param int    $window Window length in seconds (default 60)
+ */
+function checkRateLimit($ip, $group, $limit, $window = 60) {
+    // Entire function is wrapped in try/catch: on shared hosting the rate_limits
+    // table may not exist or the DB user may lack DML privileges.  In that case
+    // we silently skip rate-limiting rather than crashing the whole request.
+    try {
+        static $tableReady = false;
+        $db = getDB();
+
+        // One-time table creation per PHP request (CREATE IF NOT EXISTS is cheap).
+        if (!$tableReady) {
+            try {
+                $db->exec(
+                    'CREATE TABLE IF NOT EXISTS rate_limits (
+                        ip             VARCHAR(45)  NOT NULL,
+                        endpoint_group VARCHAR(32)  NOT NULL,
+                        window_start   INT UNSIGNED NOT NULL,
+                        request_count  INT UNSIGNED NOT NULL DEFAULT 1,
+                        PRIMARY KEY (ip, endpoint_group, window_start)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+                );
+            } catch (PDOException $e) {
+                // DDL may be restricted on shared hosting — table must be
+                // created manually via phpMyAdmin.
+            }
+            $tableReady = true;
+        }
+
+        $windowStart = (int)floor(time() / $window);
+
+        // Atomically insert or increment the counter for this (ip, group, window)
+        $db->prepare(
+            'INSERT INTO rate_limits (ip, endpoint_group, window_start, request_count)
+             VALUES (?, ?, ?, 1)
+             ON DUPLICATE KEY UPDATE request_count = request_count + 1'
+        )->execute([$ip, $group, $windowStart]);
+
+        // Read back the post-increment count
+        $stmt = $db->prepare(
+            'SELECT request_count FROM rate_limits
+             WHERE ip = ? AND endpoint_group = ? AND window_start = ?'
+        );
+        $stmt->execute([$ip, $group, $windowStart]);
+        $count = (int)$stmt->fetchColumn();
+
+        // Probabilistic cleanup: purge rows older than 5 windows (~5 min) 1% of requests
+        if (rand(1, 100) === 1) {
+            $db->prepare('DELETE FROM rate_limits WHERE window_start < ?')
+               ->execute([$windowStart - 5]);
+        }
+
+        if ($count > $limit) {
+            $retryAfter = $window - (time() % $window);
+            http_response_code(429);
+            header('Retry-After: ' . $retryAfter);
+            header('Content-Type: application/json');
+            echo json_encode(['error' => 'Too many requests. Please slow down and try again shortly.']);
+            exit;
+        }
+    } catch (Throwable $e) {
+        // Rate-limit infrastructure failure — log and continue without limiting.
+        error_log('checkRateLimit error: ' . $e->getMessage());
+    }
+}
+
 
 // ── Router ───────────────────────────────────────────────────────────
 
 $action = $_GET['action'] ?? (body()['action'] ?? '');
 
+// ── Rate Limiting ────────────────────────────────────────────────────
+// csrf_token is exempted — it's a session read with no abuse vector and must
+// succeed unconditionally so the frontend can bootstrap before any POST.
+// Auth actions are limited to 10 req/min; everything else to 60 req/min.
+// Localhost (127.0.0.1 / ::1) is exempt — rate-limiting loopback traffic
+// provides no security benefit and breaks automated test suites.
+$_rl_ip            = getClientIp();
+$_rl_noRateLimit   = ['csrf_token'];
+$_rl_strictActions = ['auth_login', 'auth_register', 'auth_change_password'];
+$_rl_localAddrs    = ['127.0.0.1', '::1', '0:0:0:0:0:0:0:1'];
+if (!in_array($action, $_rl_noRateLimit, true) && !in_array($_rl_ip, $_rl_localAddrs, true)) {
+    if (in_array($action, $_rl_strictActions, true)) {
+        checkRateLimit($_rl_ip, 'auth', 10);
+    } else {
+        checkRateLimit($_rl_ip, 'general', 60);
+    }
+}
+
 switch ($action) {
 
-    // Auth
-    case 'auth_register':        authRegister();       break;
-    case 'auth_login':           authLogin();          break;
-    case 'auth_logout':          authLogout();         break;
-    case 'auth_me':              authMe();             break;
-    case 'auth_change_password': authChangePassword(); break;
+    // CSRF bootstrap — safe GET-like endpoint; no CSRF check needed here
+    case 'csrf_token': csrfTokenAction(); break;
 
-    // Products
-    case 'products_list':   productsList();          break;
-    case 'products_add':    requireAdmin(); productsAdd();    break;
-    case 'products_edit':   requireAdmin(); productsEdit();   break;
-    case 'products_delete': requireAdmin(); productsDelete(); break;
-    case 'products_toggle': requireAdmin(); productsToggle(); break;
+    // Auth (state-changing: require CSRF; auth_me is read-only)
+    case 'auth_register':        requireCsrf(); authRegister();       break;
+    case 'auth_login':           requireCsrf(); authLogin();          break;
+    case 'auth_logout':          requireCsrf(); authLogout();         break;
+    case 'auth_me':              authMe();                            break;
+    case 'auth_change_password': requireCsrf(); authChangePassword(); break;
 
-    // Orders
-    case 'orders_place':  ordersPlace();        break;
-    case 'orders_list':   requireAdmin(); ordersList();  break;
-    case 'orders_lookup': ordersLookup();       break;
-    case 'orders_status': requireAdmin(); ordersUpdateStatus(); break;
-    case 'orders_mine':   ordersMine();         break;
+    // Products (list is read-only; mutations require CSRF + admin)
+    case 'products_list':   productsList();                                  break;
+    case 'products_add':    requireCsrf(); requireAdmin(); productsAdd();    break;
+    case 'products_edit':   requireCsrf(); requireAdmin(); productsEdit();   break;
+    case 'products_delete': requireCsrf(); requireAdmin(); productsDelete(); break;
+    case 'products_toggle': requireCsrf(); requireAdmin(); productsToggle(); break;
 
-    // Cart
-    case 'cart_get':    cartGet();    break;
-    case 'cart_add':    cartAdd();    break;
-    case 'cart_update': cartUpdate(); break;
-    case 'cart_remove': cartRemove(); break;
-    case 'cart_clear':  cartClear();  break;
+    // Orders (place + status are state-changing; list/lookup/mine are read-only)
+    case 'orders_place':  requireCsrf(); ordersPlace();                      break;
+    case 'orders_list':   requireAdmin(); ordersList();                      break;
+    case 'orders_lookup': ordersLookup();                                    break;
+    case 'orders_status': requireCsrf(); requireAdmin(); ordersUpdateStatus(); break;
+    case 'orders_mine':   ordersMine();                                      break;
 
-    // Locations
-    case 'locations_list':   locationsList();            break;
-    case 'locations_add':    requireAdmin(); locationsAdd();    break;
-    case 'locations_edit':   requireAdmin(); locationsEdit();   break;
-    case 'locations_delete': requireAdmin(); locationsDelete(); break;
+    // Cart (get is read-only; mutations require CSRF)
+    case 'cart_get':    cartGet();               break;
+    case 'cart_add':    requireCsrf(); cartAdd();    break;
+    case 'cart_update': requireCsrf(); cartUpdate(); break;
+    case 'cart_remove': requireCsrf(); cartRemove(); break;
+    case 'cart_clear':  requireCsrf(); cartClear();  break;
 
-    // Blocked dates
-    case 'dates_list':   datesList();   break;
-    case 'dates_toggle': requireAdmin(); datesToggle(); break;
+    // Locations (list is read-only; mutations require CSRF + admin)
+    case 'locations_list':   locationsList();                                    break;
+    case 'locations_add':    requireCsrf(); requireAdmin(); locationsAdd();    break;
+    case 'locations_edit':   requireCsrf(); requireAdmin(); locationsEdit();   break;
+    case 'locations_delete': requireCsrf(); requireAdmin(); locationsDelete(); break;
 
-    // Reviews
-    case 'reviews_list':       reviewsList();       break;
-    case 'reviews_list_admin': requireAdmin(); reviewsListAdmin(); break;
-    case 'reviews_verify':     reviewsVerify();     break;
-    case 'reviews_submit':     reviewsSubmit();     break;
-    case 'reviews_approve':    requireAdmin(); reviewsApprove(); break;
-    case 'reviews_reject':     requireAdmin(); reviewsReject();  break;
+    // Blocked dates (list is read-only; toggle requires CSRF + admin)
+    case 'dates_list':   datesList();                                break;
+    case 'dates_toggle': requireCsrf(); requireAdmin(); datesToggle(); break;
 
-    // Settings
-    case 'settings_get':    requireAdmin(); settingsGet();    break;
-    case 'settings_save':   requireAdmin(); settingsSave();   break;
-    case 'settings_public': settingsPublic(); break;  // Non-admin: emailjs config only
+    // Reviews (public list + verify are read-only; mutations require CSRF)
+    case 'reviews_list':       reviewsList();                                    break;
+    case 'reviews_list_admin': requireAdmin(); reviewsListAdmin();               break;
+    case 'reviews_verify':     reviewsVerify();                                  break;
+    case 'reviews_submit':     requireCsrf(); reviewsSubmit();                   break;
+    case 'reviews_approve':    requireCsrf(); requireAdmin(); reviewsApprove(); break;
+    case 'reviews_reject':     requireCsrf(); requireAdmin(); reviewsReject();  break;
+
+    // Settings (get is read-only; save requires CSRF + admin)
+    case 'settings_get':    requireAdmin(); settingsGet();                  break;
+    case 'settings_save':   requireCsrf(); requireAdmin(); settingsSave();  break;
+    case 'settings_public': settingsPublic();                              break;
 
     default:
         respondError('Unknown action.', 404);
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// CSRF TOKEN ENDPOINT
+// ════════════════════════════════════════════════════════════════════
+
+/**
+ * Returns the current session CSRF token to the frontend.
+ * Called once on page-load so JS can include it in all subsequent POSTs.
+ */
+function csrfTokenAction() {
+    respond(['token' => $_SESSION['csrf_token']]);
 }
 
 
@@ -155,8 +317,10 @@ function authRegister() {
        ->execute([$email, $hash]);
     $id = (int)$db->lastInsertId();
 
+    session_regenerate_id(true);
     $_SESSION['user'] = ['id' => $id, 'email' => $email, 'role' => 'customer'];
-    respond(['success' => true, 'user' => $_SESSION['user']]);
+    $newToken = generateCsrfToken();
+    respond(['success' => true, 'user' => $_SESSION['user'], 'csrfToken' => $newToken]);
 }
 
 function authLogin() {
@@ -174,18 +338,24 @@ function authLogin() {
     if (!$user || !password_verify($password, $user['password_hash']))
         respondError('Incorrect email or password.', 401);
 
+    // Prevent session fixation and rotate the CSRF token on login
+    session_regenerate_id(true);
     $_SESSION['user'] = [
         'id'    => (int)$user['id'],
         'email' => $user['email'],
         'role'  => $user['role'],
     ];
-    respond(['success' => true, 'user' => $_SESSION['user']]);
+    $newToken = generateCsrfToken();
+    respond(['success' => true, 'user' => $_SESSION['user'], 'csrfToken' => $newToken]);
 }
 
 function authLogout() {
+    // Clear all session data and rotate the session ID so the old
+    // session (and its CSRF token) can never be replayed.
     session_unset();
-    session_destroy();
-    respond(['success' => true]);
+    session_regenerate_id(true);
+    $newToken = generateCsrfToken();
+    respond(['success' => true, 'csrfToken' => $newToken]);
 }
 
 function authMe() {
@@ -303,8 +473,16 @@ function productsEdit() {
 function productsDelete() {
     $id = (int)(body()['id'] ?? 0);
     if (!$id) respondError('Product ID required.');
-    getDB()->prepare('DELETE FROM products WHERE id = ?')->execute([$id]);
-    respond(['success' => true]);
+    try {
+        getDB()->prepare('DELETE FROM products WHERE id = ?')->execute([$id]);
+        respond(['success' => true]);
+    } catch (PDOException $e) {
+        // SQLSTATE 23000 = integrity constraint violation (FK references this product)
+        if ($e->getCode() === '23000') {
+            respondError('This product has existing orders and cannot be deleted. Hide it with the availability toggle instead.', 409);
+        }
+        throw $e;
+    }
 }
 
 function productsToggle() {
@@ -390,8 +568,8 @@ function ordersPlace() {
     if ($booked + $requestedLoaves > $maxPerDay)
         respondError('Only ' . ($maxPerDay - $booked) . ' loaf(ves) remaining on this date.');
 
-    // Generate order ID
-    $orderId   = 'TGB-' . strtoupper(substr(uniqid('', true), -8));
+    // Generate order ID — 8 random hex chars (e.g. TGB-A1B2C3D4)
+    $orderId   = 'TGB-' . strtoupper(bin2hex(random_bytes(4)));
     $accountId = isLoggedIn() ? $_SESSION['user']['id'] : null;
 
     // Insert order

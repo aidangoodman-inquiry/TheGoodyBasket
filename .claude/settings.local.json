@@ -7,7 +7,12 @@
       "Bash(git commit:*)",
       "Bash(git remote:*)",
       "Bash(gh repo:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(python -c \"import PIL; print\\('Pillow available'\\)\")",
+      "Bash(pip install:*)",
+      "Bash(python)",
+      "Bash(python -c ':*)",
+      "mcp__Claude_Preview__preview_start"
     ]
   }
 }

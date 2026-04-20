@@ -2,7 +2,7 @@
 -- THE GOODY BASKET — Database Schema
 -- Run the entire contents of this file in phpMyAdmin:
 --   Database > SQL tab > paste > Go
--- Safe to re-run (uses IF NOT EXISTS / INSERT IGNORE).
+-- Safe to re-run on a fresh database (uses IF NOT EXISTS / INSERT IGNORE).
 -- ================================================================
 
 -- Accounts (admin + customer logins)
@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS orders (
     notes            TEXT          NULL,
     status           ENUM('pending','confirmed','completed','cancelled') NOT NULL DEFAULT 'pending',
     created_at       TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_pickup_date (pickup_date),
+    INDEX idx_account_id  (account_id),
+    INDEX idx_status      (status),
     CONSTRAINT fk_orders_account
         FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -108,6 +111,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     review_text  TEXT          NOT NULL,
     status       ENUM('pending','approved') NOT NULL DEFAULT 'pending',
     created_at   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_reviews_status (status),
     CONSTRAINT fk_reviews_order
         FOREIGN KEY (order_id) REFERENCES orders(order_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -116,6 +120,15 @@ CREATE TABLE IF NOT EXISTS reviews (
 CREATE TABLE IF NOT EXISTS settings (
     setting_key   VARCHAR(100) PRIMARY KEY,
     setting_value TEXT         NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Rate-limiting counters (auto-created by api.php on first use; listed here for reference)
+CREATE TABLE IF NOT EXISTS rate_limits (
+    ip             VARCHAR(45)  NOT NULL,
+    endpoint_group VARCHAR(32)  NOT NULL,
+    window_start   INT UNSIGNED NOT NULL,
+    request_count  INT UNSIGNED NOT NULL DEFAULT 1,
+    PRIMARY KEY (ip, endpoint_group, window_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Seed default settings rows (safe to re-run)

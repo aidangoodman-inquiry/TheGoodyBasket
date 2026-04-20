@@ -1,11 +1,25 @@
 'use strict';
 
+// ── CSRF TOKEN ───────────────────────────────────────────────────────
+// Populated during init() by calling the csrf_token endpoint.
+// Kept in sync with the <meta name="csrf-token"> tag.
+let csrfToken = '';
+
+function _setCsrfToken(token) {
+    csrfToken = token || '';
+    const metaEl = document.querySelector('meta[name="csrf-token"]');
+    if (metaEl) metaEl.setAttribute('content', csrfToken);
+}
+
 // ── API HELPER ───────────────────────────────────────────────────────
 async function api(action, data) {
     const opts = { credentials: 'same-origin' };
     if (data !== undefined) {
         opts.method  = 'POST';
-        opts.headers = { 'Content-Type': 'application/json' };
+        opts.headers = {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': csrfToken,
+        };
         opts.body    = JSON.stringify(data);
     }
     const res  = await fetch('php/api.php?action=' + action, opts);
@@ -24,6 +38,7 @@ let blockedDates  = [];
 let adminOrders   = [];
 let adminReviewsList = [];
 let adminUser     = null;
+let currentUser   = null; // any logged-in user (customer or admin)
 
 let currentFilter    = 'all';
 let reviewFilter     = 'all';
@@ -53,6 +68,18 @@ function showToast(msg) {
 
 function el(id) { return document.getElementById(id); }
 
+// ── XSS ESCAPE ───────────────────────────────────────────────────────
+// Always use esc() when inserting any DB-sourced string into innerHTML.
+function esc(str) {
+    if (str == null) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#x27;');
+}
+
 // ── ORDER RULES ──────────────────────────────────────────────────────
 const ALLOWED_DAYS       = [2, 3, 4, 5]; // Tue–Fri (0=Sun)
 const MAX_LOAVES_PER_DAY = 4;
@@ -63,7 +90,7 @@ function isAvailableDay(dateStr) {
 }
 
 // ── CLOSE MODALS ON BACKDROP ────────────────────────────────────────
-['admin-login-modal','success-modal','product-modal','location-modal','review-modal','lookup-modal'].forEach(id => {
+['admin-login-modal','success-modal','product-modal','location-modal','review-modal','lookup-modal','signin-modal','register-modal'].forEach(id => {
     el(id).addEventListener('click', e => {
         if (e.target === el(id)) {
             if (id === 'admin-login-modal') closeAdminLogin();
@@ -72,6 +99,8 @@ function isAvailableDay(dateStr) {
             else if (id === 'location-modal') closeLocationModal();
             else if (id === 'review-modal')   closeReviewModal();
             else if (id === 'lookup-modal')   closeLookupModal();
+            else if (id === 'signin-modal')   closeSignInModal();
+            else if (id === 'register-modal') closeRegisterModal();
         }
     });
 });
@@ -112,8 +141,8 @@ function renderProducts() {
         <div class="product-card">
             <div class="product-icon">${p.category === 'specialty' ? '✨' : '🍞'}</div>
             <span class="badge badge-${p.category}">${p.category}</span>
-            <h3>${p.name}</h3>
-            <p>${p.description || ''}</p>
+            <h3>${esc(p.name)}</h3>
+            <p>${esc(p.description || '')}</p>
             ${allergens.length ? `<div class="product-allergens">Contains: ${allergens.join(', ')}</div>` : ''}
             <div class="product-footer">
                 <div class="product-price">${fmtCurrency(p.price)}</div>
@@ -179,7 +208,7 @@ function renderCart() {
     container.innerHTML = `<div class="cart-list">${cartItems.map(p => `
         <div class="cart-item">
             <div class="cart-item-info">
-                <div class="cart-item-name">${p.name}</div>
+                <div class="cart-item-name">${esc(p.name)}</div>
                 <div class="cart-item-meta">
                     <span class="badge badge-${p.category}">${p.category}</span>
                     <span>${fmtCurrency(p.price)} each</span>
@@ -201,14 +230,17 @@ function renderCart() {
 
 function updateCartBadge() {
     const total = cart.reduce((s,i) => s+i.quantity, 0);
-    const badge = el('nav-cart-badge');
-    badge.textContent = total;
-    badge.classList.toggle('hidden', total === 0);
+    ['nav-cart-badge', 'nav-cart-badge-mobile'].forEach(id => {
+        const badge = document.getElementById(id);
+        if (!badge) return;
+        badge.textContent = total;
+        badge.classList.toggle('hidden', total === 0);
+    });
 }
 
 function renderLocationDropdown() {
     el('pickup-location').innerHTML = '<option value="">Select a location...</option>' +
-        locations.filter(l => l.active).map(l => `<option value="${l.id}">${l.name} – ${l.address}</option>`).join('');
+        locations.filter(l => l.active).map(l => `<option value="${l.id}">${esc(l.name)} – ${esc(l.address)}</option>`).join('');
 }
 
 function setupPhoneInput() {
@@ -235,26 +267,76 @@ function setupPhoneInput() {
     });
 }
 
+// ── CUSTOMER CALENDAR ────────────────────────────────────────────────
+let custCalYear, custCalMonth, custCalSelected = null;
+const CUST_CAL_MONTHS = ['January','February','March','April','May','June',
+                         'July','August','September','October','November','December'];
+
 function setupDateInput() {
-    const inp = el('pickup-date');
-    const min = new Date(); min.setDate(min.getDate()+1);
-    inp.min = min.toISOString().split('T')[0];
-    inp.addEventListener('change', () => {
-        const w = el('date-warning');
-        const v = inp.value;
-        if (!v) { w.classList.add('hidden'); return; }
-        if (!isAvailableDay(v)) {
-            w.style.cssText = '';
-            w.textContent = '⚠️ We only offer pickup Tuesday through Friday. Please choose a different date.';
-            w.classList.remove('hidden'); return;
-        }
-        if (blockedDates.includes(v)) {
-            w.style.cssText = '';
-            w.textContent = '⚠️ This date is unavailable. Please choose a different date.';
-            w.classList.remove('hidden'); return;
-        }
-        w.classList.add('hidden');
-    });
+    const now = new Date();
+    custCalYear  = now.getFullYear();
+    custCalMonth = now.getMonth();
+    renderCustCalendar();
+}
+
+function custCalPrev() {
+    const now = new Date();
+    if (custCalYear === now.getFullYear() && custCalMonth === now.getMonth()) return;
+    custCalMonth--;
+    if (custCalMonth < 0) { custCalMonth = 11; custCalYear--; }
+    renderCustCalendar();
+}
+
+function custCalNext() {
+    custCalMonth++;
+    if (custCalMonth > 11) { custCalMonth = 0; custCalYear++; }
+    renderCustCalendar();
+}
+
+function renderCustCalendar() {
+    const labelEl = document.getElementById('cust-cal-month');
+    if (labelEl) labelEl.textContent = CUST_CAL_MONTHS[custCalMonth] + ' ' + custCalYear;
+
+    const today      = todayStr();
+    const tomorrow   = (() => { const d = new Date(); d.setDate(d.getDate()+1); return d.toISOString().split('T')[0]; })();
+    const firstDay   = new Date(custCalYear, custCalMonth, 1).getDay();
+    const daysInMonth = new Date(custCalYear, custCalMonth+1, 0).getDate();
+
+    let html = '';
+    for (let i = 0; i < firstDay; i++) html += '<div class="cal-day cal-empty"></div>';
+
+    for (let d = 1; d <= daysInMonth; d++) {
+        const dateStr      = toISODate(custCalYear, custCalMonth, d);
+        const isPast       = dateStr < tomorrow;
+        const isRestricted = !isAvailableDay(dateStr);
+        const isBlocked    = blockedDates.includes(dateStr);
+        const isToday      = dateStr === today;
+        const isSelected   = dateStr === custCalSelected;
+        const selectable   = !isPast && !isRestricted && !isBlocked;
+
+        let cls = 'cal-day';
+        if (isPast)          cls += ' cal-past';
+        else if (isRestricted) cls += ' cal-restricted';
+        else if (isBlocked)  cls += ' cal-blocked';
+        if (isToday)         cls += ' cal-today';
+        if (isSelected)      cls += ' cust-cal-selected-day';
+
+        const onClick = selectable ? `onclick="selectCustDate('${dateStr}')"` : '';
+        html += `<div class="${cls}" ${onClick}>${d}</div>`;
+    }
+
+    const daysEl = document.getElementById('cust-cal-days');
+    if (daysEl) daysEl.innerHTML = html;
+}
+
+function selectCustDate(dateStr) {
+    custCalSelected = dateStr;
+    el('pickup-date').value = dateStr;
+    const label = document.getElementById('cust-cal-selected-label');
+    label.textContent = '✓ ' + formatDate(dateStr) + ' selected';
+    label.classList.remove('hidden');
+    el('date-warning').classList.add('hidden');
+    renderCustCalendar();
 }
 
 el('order-form').addEventListener('submit', async function(e) {
@@ -295,6 +377,9 @@ el('order-form').addEventListener('submit', async function(e) {
         sendEmail(res, name, email, phone, date, locId, notes, cartSnapshot);
         await loadCart();
         el('order-form').reset();
+        custCalSelected = null;
+        document.getElementById('cust-cal-selected-label').classList.add('hidden');
+        renderCustCalendar();
         el('date-warning').classList.add('hidden');
         el('success-order-id').textContent = 'Order ' + res.orderId;
         el('success-modal').classList.remove('hidden');
@@ -354,8 +439,12 @@ async function doAdminLogin() {
     try {
         const res = await api('auth_login', { email, password: pw });
         if (res.user.role !== 'admin') throw new Error('Not an admin account.');
-        adminUser = res.user;
+        // Server rotates session ID + CSRF token on login — keep in sync
+        if (res.csrfToken) _setCsrfToken(res.csrfToken);
+        adminUser   = res.user;
+        currentUser = res.user;
         closeAdminLogin();
+        updateAuthNav();
         showAdminView();
     } catch(e) {
         errEl.textContent = e.message || 'Incorrect email or password.';
@@ -363,10 +452,130 @@ async function doAdminLogin() {
         el('admin-pw-input').value = '';
     }
 }
-async function adminLogout() {
-    try { await api('auth_logout'); } catch(e) {}
-    adminUser = null;
-    switchToCustomer();
+async function adminLogout() { await signOut(); }
+
+async function signOut() {
+    try {
+        const res = await api('auth_logout', {});
+        if (res.csrfToken) _setCsrfToken(res.csrfToken);
+    } catch(e) {}
+    currentUser = null;
+    adminUser   = null;
+    updateAuthNav();
+    // If admin view is visible, return to customer view
+    if (!el('admin-view').classList.contains('hidden')) {
+        switchToCustomer();
+    }
+}
+
+// ── AUTH NAV UPDATE ───────────────────────────────────────────────────
+function updateAuthNav() {
+    const loggedIn = !!currentUser;
+    const isAdmin  = !!(currentUser && currentUser.role === 'admin');
+
+    // Desktop nav
+    const $si   = el('nav-signin-btn');
+    const $reg  = el('nav-register-btn');
+    const $so   = el('nav-signout-btn');
+    const $adm  = el('nav-admin-toggle');
+    if ($si)  $si.classList.toggle('hidden',  loggedIn);
+    if ($reg) $reg.classList.toggle('hidden', loggedIn);
+    if ($so)  $so.classList.toggle('hidden',  !loggedIn);
+    if ($adm) $adm.classList.toggle('hidden', !isAdmin);
+
+    // Mobile nav
+    const $msi  = el('nav-mobile-signin');
+    const $mreg = el('nav-mobile-register');
+    const $mso  = el('nav-mobile-signout');
+    const $madm = el('nav-mobile-admin-toggle');
+    if ($msi)  $msi.classList.toggle('hidden',  loggedIn);
+    if ($mreg) $mreg.classList.toggle('hidden', loggedIn);
+    if ($mso)  $mso.classList.toggle('hidden',  !loggedIn);
+    if ($madm) $madm.classList.toggle('hidden', !isAdmin);
+}
+
+// ── SIGN IN MODAL ─────────────────────────────────────────────────────
+function openSignInModal() {
+    el('si-email').value    = '';
+    el('si-password').value = '';
+    el('si-error').classList.add('hidden');
+    el('signin-modal').classList.remove('hidden');
+    setTimeout(() => el('si-email').focus(), 80);
+}
+function closeSignInModal() { el('signin-modal').classList.add('hidden'); }
+
+async function doSignIn() {
+    const email = el('si-email').value.trim();
+    const pw    = el('si-password').value;
+    const errEl = el('si-error');
+    if (!email || !pw) {
+        errEl.textContent = 'Please enter your email and password.';
+        errEl.classList.remove('hidden'); return;
+    }
+    try {
+        const res = await api('auth_login', { email, password: pw });
+        if (res.csrfToken) _setCsrfToken(res.csrfToken);
+        currentUser = res.user;
+        if (res.user.role === 'admin') adminUser = res.user;
+        closeSignInModal();
+        updateAuthNav();
+        if (res.user.role === 'admin') {
+            showAdminView();
+        } else {
+            showToast('Signed in ✓');
+            await loadCart();
+        }
+    } catch(e) {
+        errEl.textContent = e.message || 'Incorrect email or password.';
+        errEl.classList.remove('hidden');
+        el('si-password').value = '';
+    }
+}
+
+// ── CREATE ACCOUNT MODAL ──────────────────────────────────────────────
+function openCreateAccountModal() {
+    el('reg-email').value    = '';
+    el('reg-password').value = '';
+    el('reg-confirm').value  = '';
+    el('reg-error').classList.add('hidden');
+    el('register-modal').classList.remove('hidden');
+    setTimeout(() => el('reg-email').focus(), 80);
+}
+function closeRegisterModal() { el('register-modal').classList.add('hidden'); }
+
+async function doRegister() {
+    const email = el('reg-email').value.trim();
+    const pw1   = el('reg-password').value;
+    const pw2   = el('reg-confirm').value;
+    const errEl = el('reg-error');
+    if (!email || !pw1 || !pw2) {
+        errEl.textContent = 'Please fill in all fields.';
+        errEl.classList.remove('hidden'); return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        errEl.textContent = 'Please enter a valid email address.';
+        errEl.classList.remove('hidden'); return;
+    }
+    if (pw1 !== pw2) {
+        errEl.textContent = 'Passwords do not match.';
+        errEl.classList.remove('hidden'); return;
+    }
+    if (pw1.length < 8) {
+        errEl.textContent = 'Password must be at least 8 characters.';
+        errEl.classList.remove('hidden'); return;
+    }
+    try {
+        const res = await api('auth_register', { email, password: pw1 });
+        if (res.csrfToken) _setCsrfToken(res.csrfToken);
+        currentUser = res.user;
+        closeRegisterModal();
+        updateAuthNav();
+        showToast('Account created! Welcome to The Goody Basket 🎉');
+        await loadCart();
+    } catch(e) {
+        errEl.textContent = e.message || 'Could not create account. Email may already be in use.';
+        errEl.classList.remove('hidden');
+    }
 }
 
 // ── VIEW SWITCHING ────────────────────────────────────────────────────
@@ -412,7 +621,7 @@ async function renderDashboard() {
     const today     = todayStr();
     const pending   = adminOrders.filter(o=>o.status==='pending').length;
     const confirmed = adminOrders.filter(o=>o.status==='confirmed').length;
-    const todayPU   = adminOrders.filter(o=>o.pickup_date===today).length;
+    const todayPU   = adminOrders.filter(o=>o.pickup_date===today && o.status!=='cancelled').length;
     const revenue   = adminOrders.filter(o=>o.status!=='cancelled').reduce((s,o)=>s+(+o.total_cost),0);
 
     el('stats-grid').innerHTML = `
@@ -447,19 +656,19 @@ function renderOrdersTable(filter) {
         </tr></thead>
         <tbody>${orders.map(o=>`
         <tr>
-            <td style="font-family:monospace;font-size:12px;white-space:nowrap;">${o.order_id}</td>
+            <td style="font-family:monospace;font-size:12px;white-space:nowrap;">${esc(o.order_id)}</td>
             <td>
-                <strong>${o.customer_name}</strong><br>
-                <span style="font-size:12px;color:#6B5744;">${o.email}</span>
-                ${o.phone?`<br><span style="font-size:12px;color:#6B5744;">${o.phone}</span>`:''}
+                <strong>${esc(o.customer_name)}</strong><br>
+                <span style="font-size:12px;color:#6B5744;">${esc(o.email)}</span>
+                ${o.phone?`<br><span style="font-size:12px;color:#6B5744;">${esc(o.phone)}</span>`:''}
             </td>
             <td style="font-size:13px;min-width:160px;">
-                ${(o.items||[]).map(i=>`${i.quantity}\u00d7 ${i.productName}`).join('<br>')}
-                ${o.notes?`<br><em style="color:#aaa;font-size:12px;">"${o.notes}"</em>`:''}
+                ${(o.items||[]).map(i=>`${i.quantity}\u00d7 ${esc(i.productName)}`).join('<br>')}
+                ${o.notes?`<br><em style="color:#aaa;font-size:12px;">"${esc(o.notes)}"</em>`:''}
             </td>
             <td><strong>${fmtCurrency(o.total_cost)}</strong></td>
             <td style="white-space:nowrap;">${formatDate(o.pickup_date)}</td>
-            <td style="font-size:13px;">${o.location_name}</td>
+            <td style="font-size:13px;">${esc(o.location_name)}</td>
             <td>
                 <select class="status-select"
                     style="background:${sBg(o.status)};color:${sColor(o.status)};border-color:${sBorder(o.status)};"
@@ -573,7 +782,7 @@ async function renderAdminProducts() {
         <div class="prod-admin-card">
             <div class="prod-admin-top">
                 <div>
-                    <h4>${p.name}</h4>
+                    <h4>${esc(p.name)}</h4>
                     <span class="badge badge-${p.category}" style="margin-top:4px;display:inline-block;">${p.category}</span>
                 </div>
                 <div class="icon-btns">
@@ -581,7 +790,7 @@ async function renderAdminProducts() {
                     <button class="icon-btn del" onclick="deleteProduct(${p.id})" title="Delete">\ud83d\uddd1\ufe0f</button>
                 </div>
             </div>
-            <p class="prod-desc">${p.description||''}</p>
+            <p class="prod-desc">${esc(p.description||'')}</p>
             <div class="prod-admin-footer">
                 <div class="prod-price">${fmtCurrency(p.price)}</div>
                 <label class="toggle-wrap">
@@ -692,8 +901,8 @@ async function renderAdminLocations() {
     el('locations-list').innerHTML = locations.map(l=>`
         <div class="location-card">
             <div class="loc-info">
-                <h4>${l.name}</h4>
-                <p>${l.address}</p>
+                <h4>${esc(l.name)}</h4>
+                <p>${esc(l.address)}</p>
             </div>
             <div class="icon-btns">
                 <button class="icon-btn" onclick="openEditLocation(${l.id})" title="Edit">\u270f\ufe0f</button>
@@ -813,14 +1022,14 @@ function renderReviews(revs) {
     gridEl.innerHTML = revs.map(r => `
         <div class="review-card">
             <div class="review-card-top">
-                <div class="review-display-name">${r.display_name}</div>
+                <div class="review-display-name">${esc(r.display_name)}</div>
                 <div class="review-date">${formatDate((r.created_at||'').split(' ')[0])}</div>
             </div>
             <div class="review-stars">${starsHtml(r.rating, 17)}</div>
-            <div class="review-text">${r.review_text}</div>
+            <div class="review-text">${esc(r.review_text)}</div>
             <div class="review-order-pill">
                 <strong>\u2713 Verified Order</strong>
-                ${r.pickup_date ? formatDate(r.pickup_date) + ' \u00b7 ' : ''}${r.location_name || ''}
+                ${r.pickup_date ? formatDate(r.pickup_date) + ' \u00b7 ' : ''}${esc(r.location_name || '')}
             </div>
         </div>`).join('');
 }
@@ -862,7 +1071,7 @@ async function verifyOrderForReview() {
         const data = await api('reviews_verify', { orderId, email });
         verifiedOrder = data.order;
         resEl.className = 'verify-strip';
-        resEl.innerHTML = `<strong>\u2713 Order Verified</strong> ${formatDate(data.order.pickup_date)} &nbsp;\u00b7&nbsp; ${data.order.location_name}`;
+        resEl.innerHTML = `<strong>\u2713 Order Verified</strong> ${formatDate(data.order.pickup_date)} &nbsp;\u00b7&nbsp; ${esc(data.order.location_name)}`;
         resEl.classList.remove('hidden');
     } catch(e) {
         verifiedOrder = null;
@@ -925,12 +1134,12 @@ async function lookupOrder() {
                     <span style="background:${sc.bg};color:${sc.color};font-weight:700;font-size:13px;padding:3px 12px;border-radius:20px;">${order.status.charAt(0).toUpperCase()+order.status.slice(1)}</span>
                 </div>
                 <div class="lookup-row"><span class="lookup-row-label">Pickup Date</span><span>${formatDate(order.pickup_date)}</span></div>
-                <div class="lookup-row"><span class="lookup-row-label">Location</span><span>${order.location_name}</span></div>
+                <div class="lookup-row"><span class="lookup-row-label">Location</span><span>${esc(order.location_name)}</span></div>
                 <div class="lookup-row"><span class="lookup-row-label">Items</span>
-                    <span style="text-align:right;">${(order.items||[]).map(i=>`${i.quantity}\u00d7 ${i.productName}`).join('<br>')}</span>
+                    <span style="text-align:right;">${(order.items||[]).map(i=>`${i.quantity}\u00d7 ${esc(i.productName)}`).join('<br>')}</span>
                 </div>
                 <div class="lookup-row"><span class="lookup-row-label">Order Total</span><strong>${fmtCurrency(order.total_cost)}</strong></div>
-                ${order.notes?`<div class="lookup-row"><span class="lookup-row-label">Notes</span><span style="font-style:italic;">${order.notes}</span></div>`:''}
+                ${order.notes?`<div class="lookup-row"><span class="lookup-row-label">Notes</span><span style="font-style:italic;">${esc(order.notes)}</span></div>`:''}
             </div>`;
     } catch(e) {
         resEl.innerHTML = `<div class="verify-strip error" style="margin-top:16px;">\u26a0\ufe0f ${e.message||'Order not found. Check your Order ID and email.'}</div>`;
@@ -965,7 +1174,7 @@ async function renderAdminReviews() {
         <div class="review-admin-card">
             <div class="review-admin-top">
                 <div>
-                    <div class="review-admin-name">${r.display_name}
+                    <div class="review-admin-name">${esc(r.display_name)}
                         <span class="${r.status==='approved'?'approved-badge':'pending-badge'}" style="margin-left:8px;">${r.status==='approved'?'Approved':'Pending'}</span>
                     </div>
                     <div class="review-admin-meta">${starsHtml(r.rating,14)} &nbsp;\u00b7&nbsp; ${formatDate((r.created_at||'').split(' ')[0])}</div>
@@ -977,8 +1186,8 @@ async function renderAdminReviews() {
                     <button class="icon-btn del" onclick="deleteReview(${r.id})" title="Delete">\ud83d\uddd1\ufe0f</button>
                 </div>
             </div>
-            <div class="review-admin-text">"${r.review_text}"</div>
-            <div class="review-admin-order">\u2713 Order: ${r.order_id} \u00b7 ${formatDate(r.pickup_date)} \u00b7 ${r.location_name||''}</div>
+            <div class="review-admin-text">"${esc(r.review_text)}"</div>
+            <div class="review-admin-order">\u2713 Order: ${esc(r.order_id)} \u00b7 ${formatDate(r.pickup_date)} \u00b7 ${esc(r.location_name||'')}</div>
         </div>`).join('');
 }
 
@@ -1003,6 +1212,18 @@ async function deleteReview(id) {
 
 // ── INIT ──────────────────────────────────────────────────────────────
 (async function init() {
+    // ── Step 1: Bootstrap CSRF token ────────────────────────────────
+    // Must happen before any state-changing POST request is made.
+    try {
+        const csrf = await api('csrf_token');
+        if (!csrf.token) throw new Error('No token in response');
+        _setCsrfToken(csrf.token);
+    } catch(e) {
+        showToast('Security token failed to load — please refresh the page before placing an order.');
+        console.error('CSRF bootstrap failed:', e);
+    }
+
+    // ── Step 2: Load public page data in parallel ────────────────────
     try {
         const [prods, locs, dates, revs] = await Promise.all([
             api('products_list'),
@@ -1023,11 +1244,15 @@ async function deleteReview(id) {
     setupDateInput();
     initCalendar();
 
-    // Restore admin session if already logged in (e.g. page refresh)
+    // Restore session if already logged in (customer or admin, e.g. page refresh)
     try {
         const me = await api('auth_me');
-        if (me.user && me.user.role === 'admin') adminUser = me.user;
+        if (me.user) {
+            currentUser = me.user;
+            if (me.user.role === 'admin') adminUser = me.user;
+        }
     } catch(e) {}
+    updateAuthNav();
 
     ['rv-order-id','rv-order-email'].forEach(id => {
         el(id).addEventListener('input', () => {
@@ -1035,4 +1260,29 @@ async function deleteReview(id) {
             el('rv-verify-result').classList.add('hidden');
         });
     });
-})();
+
+})();  // end init
+
+// Mobile hamburger menu — runs immediately (script is at bottom of body)
+(function initHamburger() {
+    const hamburger = document.getElementById('nav-hamburger');
+    const mobileMenu = document.getElementById('nav-mobile-menu');
+    if (!hamburger || !mobileMenu) return;
+    function closeMobileMenu() {
+        hamburger.classList.remove('open');
+        hamburger.setAttribute('aria-expanded', 'false');
+        mobileMenu.classList.remove('open');
+        mobileMenu.setAttribute('aria-hidden', 'true');
+    }
+    hamburger.addEventListener('click', () => {
+        const isOpen = mobileMenu.classList.contains('open');
+        if (isOpen) { closeMobileMenu(); }
+        else {
+            hamburger.classList.add('open');
+            hamburger.setAttribute('aria-expanded', 'true');
+            mobileMenu.classList.add('open');
+            mobileMenu.setAttribute('aria-hidden', 'false');
+        }
+    });
+    mobileMenu.querySelectorAll('a').forEach(a => a.addEventListener('click', closeMobileMenu));
+}());
