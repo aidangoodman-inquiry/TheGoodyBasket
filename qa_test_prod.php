@@ -10,14 +10,14 @@
 //   https://thegoodybasket.com/qa_test_prod.php
 //   http://localhost/TheGoodyBasket/qa_test_prod.php
 //
-// Requires qa_config.php in the same directory.
+// Requires qa_config_prod.php in the same directory.
 // DO NOT deploy to production without restricting access.
 // ================================================================
 
-if (!file_exists(__DIR__ . '/qa_config.php')) {
-    die('<pre>ERROR: qa_config.php not found. See QA_TEST_README.md for setup instructions.</pre>');
+if (!file_exists(__DIR__ . '/qa_config_prod.php')) {
+    die('<pre>ERROR: qa_config_prod.php not found. See QA_TEST_README.md for setup instructions.</pre>');
 }
-require_once __DIR__ . '/qa_config.php';
+require_once __DIR__ . '/qa_config_prod.php';
 set_time_limit(QA_SCRIPT_TIMEOUT);
 
 
